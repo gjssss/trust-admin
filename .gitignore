@@ -9,7 +9,7 @@ lerna-debug.log*
 
 node_modules
 .next
-data/
+/data/
 *.sqlite*
 *.db*
 *.tsbuildinfo
