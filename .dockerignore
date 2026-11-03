@@ -1,0 +1,14 @@
+node_modules
+.next
+dist
+.git
+.DS_Store
+.env
+.env.*
+!.env.example
+data
+*.sqlite*
+*.db*
+*.log
+coverage
+test-results

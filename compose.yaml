@@ -1,0 +1,25 @@
+services:
+  trust-admin:
+    build: .
+    image: trust-admin:local
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DATABASE_PATH: /app/data/trust-admin.sqlite
+      FAKE_NEWS_UPSTREAM_URL: ${FAKE_NEWS_UPSTREAM_URL:-http://fakenews-detector:30101}
+      BOT_DETECTION_UPSTREAM_URL: ${BOT_DETECTION_UPSTREAM_URL:-http://mgtab:30102}
+      AIGT_UPSTREAM_URL: ${AIGT_UPSTREAM_URL:-http://aigt:30103}
+    volumes:
+      - trust-admin-data:/app/data
+    networks:
+      - backend
+volumes:
+  trust-admin-data:
+networks:
+  backend:
+    external: true
+    name: ${BACKEND_NETWORK:-trust-backend}
