@@ -1,0 +1,116 @@
+name: docker-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v2.2.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  IMAGE: trust-admin
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build-test-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image architecture
+        run: |
+          arch="$(docker image inspect "${IMAGE}:${RELEASE_TAG}" --format '{{.Architecture}}')"
+          echo "image architecture: ${arch}"
+          test "${arch}" = "amd64"
+
+      - name: Start container
+        env:
+          SMOKE_PASSWORD: ci-smoke-password-123
+        run: |
+          docker run -d --name trust-admin-ci \
+            -p 3000:3000 \
+            -e APP_ORIGIN=http://127.0.0.1:3000 \
+            -e ADMIN_USERNAME=smoke_admin \
+            -e ADMIN_PASSWORD="${SMOKE_PASSWORD}" \
+            -e DATABASE_PATH=/app/data/trust-admin.sqlite \
+            -e FAKE_NEWS_UPSTREAM_URL=http://127.0.0.1:30101 \
+            -e BOT_DETECTION_UPSTREAM_URL=http://127.0.0.1:30102 \
+            -e AIGT_UPSTREAM_URL=http://127.0.0.1:30103 \
+            "${IMAGE}:${RELEASE_TAG}"
+
+      - name: Wait for container healthcheck
+        run: |
+          for attempt in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' trust-admin-ci 2>/dev/null || echo missing)"
+            echo "attempt ${attempt}: ${status}"
+            if [ "${status}" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "${status}" = "unhealthy" ] || [ "${status}" = "missing" ]; then
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "container did not become healthy in time"
+          exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run HTTP smoke test
+        env:
+          TEST_ORIGIN: http://127.0.0.1:3000
+          TEST_ADMIN: smoke_admin
+          TEST_PASSWORD: ci-smoke-password-123
+        run: node tests/http-smoke.mjs
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs trust-admin-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f trust-admin-ci || true
+
+      - name: Export image tarball
+        run: |
+          mkdir -p artifacts
+          tarball="artifacts/${IMAGE}-${RELEASE_TAG}-amd64.tar.gz"
+          docker save "${IMAGE}:${RELEASE_TAG}" | gzip -9 > "${tarball}"
+          (cd artifacts && sha256sum "$(basename "${tarball}")" > "$(basename "${tarball}").sha256")
+          ls -lh artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.IMAGE }} ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
